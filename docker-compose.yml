@@ -1,0 +1,375 @@
+version: '3.8'
+
+services:
+  # Database
+  mongodb:
+    image: mongo:7.0
+    container_name: buildbrainos-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data:/data/db
+      - ./data/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    networks:
+      - buildbrainos
+
+  # Cache
+  redis:
+    image: redis:7.2-alpine
+    container_name: buildbrainos-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./data/redis.conf:/etc/redis/redis.conf
+    command: redis-server /etc/redis/redis.conf
+    networks:
+      - buildbrainos
+
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: buildbrainos-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./data/qdrant/config.yaml:/qdrant/config/production.yaml
+    networks:
+      - buildbrainos
+
+  # API Gateway
+  kong:
+    image: kong:3.4
+    container_name: buildbrainos-kong
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "8443:8443"
+      - "8001:8001"
+      - "8444:8444"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stdout
+      KONG_ADMIN_ERROR_LOG: /dev/stdout
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./gateway/kong.yml:/kong/declarative/kong.yml
+    networks:
+      - buildbrainos
+
+  # Orchestration
+  temporal:
+    image: temporalio/auto-setup:1.22.0
+    container_name: buildbrainos-temporal
+    restart: unless-stopped
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEED_FILE=/seed-temporal.sql
+    volumes:
+      - temporal_data:/data
+    networks:
+      - buildbrainos
+
+  # Microservices
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-auth-service
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-user-service
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  project-service:
+    build:
+      context: ./services/project-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-project-service
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-payment-service
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  marketplace-service:
+    build:
+      context: ./services/marketplace-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-marketplace-service
+    restart: unless-stopped
+    ports:
+      - "3004:3004"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  document-service:
+    build:
+      context: ./services/document-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-document-service
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  compliance-service:
+    build:
+      context: ./services/compliance-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-compliance-service
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-notification-service
+    restart: unless-stopped
+    ports:
+      - "3007:3007"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+      - EMAIL_API_KEY=${EMAIL_API_KEY}
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: buildbrainos-analytics-service
+    restart: unless-stopped
+    ports:
+      - "3008:3008"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  # AI Agents
+  blueprint-agent:
+    build:
+      context: ./ai-agents/blueprint-agent
+      dockerfile: Dockerfile
+    container_name: buildbrainos-blueprint-agent
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    depends_on:
+      - qdrant
+    networks:
+      - buildbrainos
+
+  safety-agent:
+    build:
+      context: ./ai-agents/safety-agent
+      dockerfile: Dockerfile
+    container_name: buildbrainos-safety-agent
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - qdrant
+    networks:
+      - buildbrainos
+
+  compliance-ocr-agent:
+    build:
+      context: ./ai-agents/compliance-ocr-agent
+      dockerfile: Dockerfile
+    container_name: buildbrainos-compliance-ocr-agent
+    restart: unless-stopped
+    ports:
+      - "8003:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - qdrant
+    networks:
+      - buildbrainos
+
+  bid-scraper-agent:
+    build:
+      context: ./ai-agents/bid-scraper-agent
+      dockerfile: Dockerfile
+    container_name: buildbrainos-bid-scraper-agent
+    restart: unless-stopped
+    ports:
+      - "8004:8000"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  scheduler-agent:
+    build:
+      context: ./ai-agents/scheduler-agent
+      dockerfile: Dockerfile
+    container_name: buildbrainos-scheduler-agent
+    restart: unless-stopped
+    ports:
+      - "8005:8000"
+    environment:
+      - DATABASE_URL=mongodb://admin:password@mongodb:27017/buildbrainos?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - buildbrainos
+
+  # Orchestration
+  temporal-worker:
+    build:
+      context: ./orchestration
+      dockerfile: Dockerfile
+    container_name: buildbrainos-temporal-worker
+    restart: unless-stopped
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+    depends_on:
+      - temporal
+    networks:
+      - buildbrainos
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: buildbrainos-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - buildbrainos
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: buildbrainos-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - buildbrainos
+
+volumes:
+  mongodb_data:
+  redis_data:
+  qdrant_data:
+  temporal_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  buildbrainos:
+    driver: bridge
